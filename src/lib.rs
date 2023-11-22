@@ -13,11 +13,15 @@ use std::task::Poll;
 /// A custom asset reader implementation that wraps a given asset reader implementation
 pub struct HttpAssetReader {
     client: surf::Client,
+    /// A random sequence that is interpreted as a slash. Used to work around
+    /// the fact that bevy treats slashes as directories and will subsequently
+    /// try to load sub-entities from the directory.
+    fake_slash: String,
 }
 
 impl HttpAssetReader {
     /// Creates a new `HttpAssetReader`. The path provided will be used to build URLs to query for assets.
-    pub fn new(base_url: &str) -> Self {
+    pub fn new(base_url: &str, fake_slash: String) -> Self {
         let base_url = surf::Url::parse(base_url).expect("invalid base url");
 
         let client = surf::Config::new().set_timeout(Some(std::time::Duration::from_secs(5)));
@@ -25,7 +29,7 @@ impl HttpAssetReader {
 
         let client = client.try_into().expect("could not create http client");
 
-        Self { client }
+        Self { client, fake_slash }
     }
 
     async fn fetch_bytes<'a>(&self, path: &str) -> Result<Box<Reader<'a>>, AssetReaderError> {
@@ -81,7 +85,8 @@ impl AssetReader for HttpAssetReader {
         &'a self,
         path: &'a Path,
     ) -> BoxedFuture<'a, Result<Box<Reader<'a>>, AssetReaderError>> {
-        Box::pin(async move { self.fetch_bytes(&path.to_string_lossy()).await })
+        let path = path.display().to_string().replace(&self.fake_slash, "/");
+        Box::pin(async move { self.fetch_bytes(&path).await })
     }
 
     fn read_meta<'a>(
@@ -89,7 +94,8 @@ impl AssetReader for HttpAssetReader {
         path: &'a Path,
     ) -> BoxedFuture<'a, Result<Box<Reader<'a>>, AssetReaderError>> {
         Box::pin(async move {
-            let meta_path = path.to_string_lossy() + ".meta";
+            let path = path.display().to_string().replace(&self.fake_slash, "/");
+            let meta_path = path + ".meta";
             Ok(self.fetch_bytes(&meta_path).await?)
         })
     }
@@ -116,15 +122,21 @@ impl AssetReader for HttpAssetReader {
 pub struct HttpAssetReaderPlugin {
     pub id: String,
     pub base_url: String,
+    /// A random sequence that is interpreted as a slash. Used to work around
+    /// the fact that bevy treats slashes as directories and will subsequently
+    /// try to load sub-entities from the directory.
+    pub fake_slash: String,
 }
 
 impl Plugin for HttpAssetReaderPlugin {
     fn build(&self, app: &mut App) {
         let id = self.id.clone();
         let base_url = self.base_url.clone();
+        let fake_slash = self.fake_slash.clone();
         app.register_asset_source(
             AssetSourceId::Name(id.into()),
-            AssetSource::build().with_reader(move || Box::new(HttpAssetReader::new(&base_url))),
+            AssetSource::build()
+                .with_reader(move || Box::new(HttpAssetReader::new(&base_url, fake_slash.clone()))),
         );
     }
 }
